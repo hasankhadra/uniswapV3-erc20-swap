@@ -16,6 +16,8 @@ import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Capped.sol";
 
 // Importing interfaces for interacting with Uniswap V3.
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
+import "@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3SwapCallback.sol";
+import "@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3MintCallback.sol";
 
 // SafeCast for safely casting between types.
 import "@openzeppelin/contracts/utils/math/SafeCast.sol";
@@ -30,7 +32,12 @@ import "@uniswap/v3-periphery/contracts/libraries/TransferHelper.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 // LionToken is an ERC20 token with a capped supply and integration with Uniswap V3 for liquidity pool interactions.
-contract LionToken is ERC20Capped, Ownable {
+contract LionToken is
+    ERC20Capped,
+    Ownable,
+    IUniswapV3SwapCallback,
+    IUniswapV3MintCallback
+{
     using SafeERC20 for IERC20;
 
     // Public address of WETH token.
@@ -108,5 +115,94 @@ contract LionToken is ERC20Capped, Ownable {
             );
             return SafeCast.toUint256(-amount0);
         }
+    }
+
+    /// @inheritdoc IUniswapV3SwapCallback
+    function uniswapV3SwapCallback(
+        int256 amount0Delta,
+        int256 amount1Delta,
+        bytes calldata /* data */
+    ) external override {
+        require(msg.sender == address(pool), "LionToken: FORBIDDEN");
+        IERC20 token0 = IERC20(pool.token0());
+        IERC20 token1 = IERC20(pool.token1());
+        address payer;
+        assembly {
+            let emptyPtr := mload(0x40)
+            calldatacopy(emptyPtr, 0x84, 0x20)
+            payer := mload(emptyPtr)
+        }
+
+        if (amount0Delta > 0) {
+            if (payer == address(this)) {
+                token0.safeTransfer(msg.sender, uint256(amount0Delta));
+            } else {
+                token0.safeTransferFrom(
+                    payer,
+                    msg.sender,
+                    uint256(amount0Delta)
+                );
+            }
+        }
+
+        if (amount1Delta > 0) {
+            if (payer == address(this)) {
+                token1.safeTransfer(msg.sender, uint256(amount1Delta));
+            } else {
+                token1.safeTransferFrom(
+                    payer,
+                    msg.sender,
+                    uint256(amount1Delta)
+                );
+            }
+        }
+    }
+
+    function uniswapV3MintCallback(
+        uint256 amount0Owed,
+        uint256 amount1Owed,
+        bytes calldata data
+    ) external override {
+        require(msg.sender == address(pool), "LionToken: FORBIDDEN");
+        IERC20 token0 = IERC20(pool.token0());
+        IERC20 token1 = IERC20(pool.token1());
+        // If the contract owes token0 (LionToken) to the pool
+        if (amount0Owed > 0) {
+            // Ensure the contract has enough LionToken balance
+            require(
+                balanceOf(address(this)) >= amount0Owed,
+                "Insufficient LionToken balance"
+            );
+            // Approve the pool to take the owed LionToken amount
+            _approve(address(this), address(pool), amount0Owed);
+            // Transfer the owed amount of LionToken to the pool
+            TransferHelper.safeTransfer(
+                address(this),
+                address(pool),
+                amount0Owed
+            );
+        }
+
+        // If the contract owes token1 (WETH) to the pool
+        if (amount1Owed > 0) {
+            // Ensure the contract has enough WETH balance
+            // Assume WETH is an ERC20 token and the contract has a reference to it
+            require(
+                token1.balanceOf(address(this)) >= amount1Owed,
+                "Insufficient WETH balance"
+            );
+            // Approve the pool to take the owed WETH amount
+            token1.approve(address(pool), amount1Owed);
+            // Transfer the owed amount of WETH to the pool
+            TransferHelper.safeTransfer(
+                address(token1),
+                address(pool),
+                amount1Owed
+            );
+        }
+    }
+
+    function mintUniswapV3(uint128 amount) external onlyOwner {
+        pool.mint(address(this), -2000, 100, amount, abi.encode(_msgSender()));
     }
 }

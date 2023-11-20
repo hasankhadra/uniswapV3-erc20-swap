@@ -26,6 +26,7 @@ export function encodePriceSqrt(reserve1: BigNumberish, reserve0: BigNumberish) 
 
 }
 
+const NonfungiblePositionManagerAddress = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
 export const MIN_SQRT_RATIO = 4295128739n
 export const MAX_SQRT_RATIO = 1461446703485210103287273052203988822378723970342n
 
@@ -39,6 +40,9 @@ describe('LionToken Contract', function () {
     const uniswapFactoryAddress = '0x1F98431c8aD98523631AE4a59f267346ea31F984';
     const uniswapFactoryABI = Factory_ABI;
     let cap = ethers.parseEther('100000000')
+    const erc_abi = [{ "constant": true, "inputs": [], "name": "name", "outputs": [{ "name": "", "type": "string" }], "payable": false, "stateMutability": "view", "type": "function" }, { "constant": false, "inputs": [{ "name": "guy", "type": "address" }, { "name": "wad", "type": "uint256" }], "name": "approve", "outputs": [{ "name": "", "type": "bool" }], "payable": false, "stateMutability": "nonpayable", "type": "function" }, { "constant": true, "inputs": [], "name": "totalSupply", "outputs": [{ "name": "", "type": "uint256" }], "payable": false, "stateMutability": "view", "type": "function" }, { "constant": false, "inputs": [{ "name": "src", "type": "address" }, { "name": "dst", "type": "address" }, { "name": "wad", "type": "uint256" }], "name": "transferFrom", "outputs": [{ "name": "", "type": "bool" }], "payable": false, "stateMutability": "nonpayable", "type": "function" }, { "constant": false, "inputs": [{ "name": "wad", "type": "uint256" }], "name": "withdraw", "outputs": [], "payable": false, "stateMutability": "nonpayable", "type": "function" }, { "constant": true, "inputs": [], "name": "decimals", "outputs": [{ "name": "", "type": "uint8" }], "payable": false, "stateMutability": "view", "type": "function" }, { "constant": true, "inputs": [{ "name": "", "type": "address" }], "name": "balanceOf", "outputs": [{ "name": "", "type": "uint256" }], "payable": false, "stateMutability": "view", "type": "function" }, { "constant": true, "inputs": [], "name": "symbol", "outputs": [{ "name": "", "type": "string" }], "payable": false, "stateMutability": "view", "type": "function" }, { "constant": false, "inputs": [{ "name": "dst", "type": "address" }, { "name": "wad", "type": "uint256" }], "name": "transfer", "outputs": [{ "name": "", "type": "bool" }], "payable": false, "stateMutability": "nonpayable", "type": "function" }, { "constant": false, "inputs": [], "name": "deposit", "outputs": [], "payable": true, "stateMutability": "payable", "type": "function" }, { "constant": true, "inputs": [{ "name": "", "type": "address" }, { "name": "", "type": "address" }], "name": "allowance", "outputs": [{ "name": "", "type": "uint256" }], "payable": false, "stateMutability": "view", "type": "function" }, { "payable": true, "stateMutability": "payable", "type": "fallback" }, { "anonymous": false, "inputs": [{ "indexed": true, "name": "src", "type": "address" }, { "indexed": true, "name": "guy", "type": "address" }, { "indexed": false, "name": "wad", "type": "uint256" }], "name": "Approval", "type": "event" }, { "anonymous": false, "inputs": [{ "indexed": true, "name": "src", "type": "address" }, { "indexed": true, "name": "dst", "type": "address" }, { "indexed": false, "name": "wad", "type": "uint256" }], "name": "Transfer", "type": "event" }, { "anonymous": false, "inputs": [{ "indexed": true, "name": "dst", "type": "address" }, { "indexed": false, "name": "wad", "type": "uint256" }], "name": "Deposit", "type": "event" }, { "anonymous": false, "inputs": [{ "indexed": true, "name": "src", "type": "address" }, { "indexed": false, "name": "wad", "type": "uint256" }], "name": "Withdrawal", "type": "event" }]
+    const weth_addr = '0xB4FBF271143F4FBf7B91A5ded31805e42b2208d6'
+    let weth: any
 
     beforeEach(async function () {
         // Get the ContractFactory and Signers here
@@ -47,7 +51,7 @@ describe('LionToken Contract', function () {
         )) as unknown as LionToken__factory;
 
         [owner, addr1, addr2, ...addrs] = await ethers.getSigners()
-
+        weth = new ethers.Contract(weth_addr, erc_abi, owner)
         lionToken = await LionToken.deploy(cap, "0xB4FBF271143F4FBf7B91A5ded31805e42b2208d6")
         uniswapFactory = new ethers.Contract(uniswapFactoryAddress, uniswapFactoryABI, owner);
     })
@@ -120,10 +124,73 @@ describe('LionToken Contract', function () {
             await lionToken.setPool(newPoolAddress);
 
             pool = await ethers.getContractAt('IUniswapV3Pool', newPoolAddress);
+
             const sqrPrice = encodePriceSqrt(1, 1);
-            console.log('sqrPrice', sqrPrice.toString())
             await pool.initialize(sqrPrice)
+
+            // Provide liquidity to the pool
+            const liquidityAmountTokenA = ethers.parseUnits("2", "ether"); // Example amount for LionToken
+            const liquidityAmountTokenB = ethers.parseUnits("2", "ether"); // Example amount for WETH
+
+            const poolAddress = await pool.getAddress();
+
+            // Ensure the liquidity provider has enough tokens and approve transfers
+            await lionToken.connect(owner).approve(poolAddress, liquidityAmountTokenA);
+            const overrides = {
+                value: liquidityAmountTokenB,
+            }
+            let tx = await weth.connect(owner).deposit(overrides)
+            await tx.wait()
+
+            await weth.transfer(await lionToken.getAddress(), liquidityAmountTokenB);
+            await lionToken.connect(owner).mintUniswapV3(liquidityAmountTokenA)
+            await lionToken.connect(owner).mintUniswapV3(liquidityAmountTokenB)
+
         })
+
+        it("should swap Tokens for WETH", async function () {
+            const lionTokenAddress = await lionToken.getAddress();
+
+            const initialWETHBalance = await weth.balanceOf(lionTokenAddress);
+            const initialTokenBalance = await lionToken.balanceOf(lionTokenAddress);
+
+            // console.log("initialWETHBalance", initialWETHBalance.toString())
+            // console.log("initialTokenBalance", initialTokenBalance.toString())
+
+            await lionToken.connect(owner).swapTokensForWETH(1000);
+
+            const finalWETHBalance = await weth.balanceOf(lionTokenAddress);
+            const finalTokenBalance = await lionToken.balanceOf(lionTokenAddress);
+
+            // console.log("finalWETHBalance", finalWETHBalance.toString())
+            // console.log("finalTokenBalance", finalTokenBalance.toString())
+
+            expect(finalWETHBalance).to.not.equal(initialWETHBalance);
+            expect(finalTokenBalance).to.not.equal(initialTokenBalance);
+        });
+
+
+        it("should swap weth for TOKEN", async function () {
+            const lionTokenAddress = await lionToken.getAddress();
+            await lionToken.connect(owner).swapTokensForWETH(100000000000000);
+
+            const initialWETHBalance = await weth.balanceOf(lionTokenAddress);
+            const initialTokenBalance = await lionToken.balanceOf(lionTokenAddress);
+
+            // console.log("initialWETHBalance", initialWETHBalance.toString())
+            // console.log("initialTokenBalance", initialTokenBalance.toString())
+
+            const tx1 = await lionToken.connect(owner).swapWETHForTokens(1000);
+
+            const finalWETHBalance = await weth.balanceOf(lionTokenAddress);
+            const finalTokenBalance = await lionToken.balanceOf(lionTokenAddress);
+
+            // console.log("finalWETHBalance", finalWETHBalance.toString())
+            // console.log("finalTokenBalance", finalTokenBalance.toString())
+
+            expect(finalWETHBalance).to.not.equal(initialWETHBalance);
+            expect(finalTokenBalance).to.not.equal(initialTokenBalance);
+        });
 
     });
 
